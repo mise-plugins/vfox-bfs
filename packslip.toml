@@ -1,0 +1,10 @@
+# The plugin is a portable Lua payload, not the bfs executable it installs.
+[[artifact]]
+path = "dist/vfox-bfs.tar.gz"
+format = "tar.gz"
+portable = true
+bin = []
+
+[artifact.extensions.mise]
+plugin = "vfox"
+name = "bfs"
