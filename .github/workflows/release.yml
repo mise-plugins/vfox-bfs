@@ -1,0 +1,109 @@
+name: Packslip
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package plugin
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^PLUGIN.version = "\([^"]*\)"/\1/p' metadata.lua)
+          test -n "$version"
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            test "$GITHUB_REF_NAME" = "v$version"
+            tag="$GITHUB_REF_NAME"
+          else
+            version="$version-dev.$GITHUB_RUN_NUMBER"
+            tag="v$version"
+          fi
+          mkdir -p dist
+          git archive --format=tar HEAD metadata.lua hooks lib LICENSE | gzip -n > dist/vfox-bfs.tar.gz
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Sign packslip
+        uses: jdx/packslip@a0d434ad57571c62dbd0ab5095b4eff607a71fd3 # v1.1.1
+        with:
+          artifacts: dist/vfox-bfs.tar.gz
+          manifest: packslip.toml
+          version: ${{ steps.package.outputs.version }}
+          tag: ${{ steps.package.outputs.tag }}
+          out: dist
+          upload: "false"
+      - name: Verify archive and signer
+        run: |
+          packslip verify dist/packslip.sigstore.json \
+            --artifact dist/vfox-bfs.tar.gz \
+            --identity-prefix "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@" \
+            --issuer https://token.actions.githubusercontent.com
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-release
+          path: dist/
+          if-no-files-found: error
+
+  test:
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: plugin-release
+          path: dist
+      - uses: jdx/mise-action@v2
+        with:
+          install: false
+      - name: Verify and exercise released plugin
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          mise x packslip@1.1.1 -- packslip verify dist/packslip.sigstore.json \
+            --artifact dist/vfox-bfs.tar.gz \
+            --identity-prefix "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@" \
+            --issuer https://token.actions.githubusercontent.com
+          mkdir plugin
+          tar -xzf dist/vfox-bfs.tar.gz -C plugin
+          test -f plugin/metadata.lua
+          test ! -e plugin/.git
+          mise plugins link bfs "$PWD/plugin"
+          mise x bfs@4.0.4 -- bfs --version
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: plugin-release
+          path: dist
+      - name: Publish verified plugin release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" dist/vfox-bfs.tar.gz dist/packslip.sigstore.json \
+            --repo "$GITHUB_REPOSITORY"
