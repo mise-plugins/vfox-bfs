@@ -84,7 +84,8 @@ jobs:
           tar -xzf dist/vfox-bfs.tar.gz -C plugin
           test -f plugin/metadata.lua
           test ! -e plugin/.git
-          mise x "vfox:file://$PWD/plugin@4.0.4" -- bfs --version
+          mise plugins link bfs "$PWD/plugin"
+          mise x bfs@4.0.4 -- bfs --version
 
   publish:
     if: github.ref_type == 'tag'
